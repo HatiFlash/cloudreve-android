@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Cloudreve",
+    "slug": "cloudreve-app",
+    "scheme": "cloudreveapp",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0f1420",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "io.github.hatiflash.cloudreveclient",
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff",
+        "foregroundImage": "./assets/adaptive-foreground.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-sharing",
+      "expo-video",
+      "expo-image",
+      "expo-document-picker",
+      [
+        "expo-image-picker",
+        { "photosPermission": "L'app accède à vos photos pour les envoyer vers Cloudreve." }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      [
+        "expo-share-intent",
+        {
+          "androidIntentFilters": ["image/*", "video/*", "audio/*", "application/*", "text/*"],
+          "androidMultiIntentFilters": ["image/*", "video/*", "application/*"]
+        }
+      ]
+    ]
+  }
+}
