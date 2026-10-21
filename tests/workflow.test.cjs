@@ -36,6 +36,54 @@ test('manual runs use main workflow and exact tag source without exposing signin
   assert.doesNotMatch(workflow, /\bset -x\b/);
 });
 
+test('certificate fingerprint accepts legacy and V3.0 apksigner labels, rejecting ambiguity', () => {
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'android-release-cert-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'app.json'), JSON.stringify({ expo: { version: '1.0.3', android: { package: 'example.app', versionCode: 4 } } }));
+    fs.writeFileSync(path.join(dir, 'Cloudreve.apk'), 'fixture, not a real APK');
+    fs.writeFileSync(path.join(dir, 'apk-metadata.txt'), "package: name='example.app' versionCode='4' versionName='1.0.3'\n");
+    const v30Signer = [
+      'Verifies',
+      'Verified using v2 scheme (APK Signature Scheme v2): true',
+      'Verified using v3 scheme (APK Signature Scheme v3): true',
+      'Number of signers: 1',
+      'V3.0 Signer: certificate DN: O=HatiFlash, CN=HatiFlash Cloudreve Android',
+      `V3.0 Signer: certificate SHA-256 digest: ${fingerprint}`,
+      'V3.0 Signer: certificate SHA-1 digest: e99d68d99e8c4f882cc02b32614e9f1d12da4033',
+      'V3.0 Signer: key algorithm: RSA',
+      'V3.0 Signer: public key SHA-256 digest: 06e74494a32d59b03e91cb2b958fdaea23da96fb4e4b86a8b8847bd991fe404f',
+      '',
+    ].join('\n');
+    const run = (content) => {
+      fs.writeFileSync(path.join(dir, 'signer-details.txt'), content);
+      return spawnSync('bash', [helper, 'verify'], { cwd: dir, env: { ...process.env, RELEASE_TAG: 'v1.0.3' }, encoding: 'utf8' });
+    };
+    // Real apksigner V3.0 output (fixture) must validate.
+    assert.equal(run(v30Signer).status, 0, 'V3.0 label must be accepted');
+    // Legacy label still accepted.
+    assert.equal(run(`Signer #1 certificate SHA-256 digest: ${fingerprint}\n`).status, 0, 'legacy label must remain accepted');
+    // Wrong fingerprint under V3.0 label is rejected and printed publicly.
+    const wrong = run(v30Signer.replace(fingerprint, '1'.repeat(64)));
+    assert.notEqual(wrong.status, 0);
+    assert.match(wrong.stderr, /Certificate fingerprint mismatch/);
+    assert.match(wrong.stdout, /V3\.0 Signer: certificate SHA-256 digest: 1{64}/);
+    assert.doesNotMatch(wrong.stdout, new RegExp(fingerprint));
+    // Two distinct fingerprints across labels are rejected as ambiguous.
+    const multi = run(`${v30Signer}Signer #1 certificate SHA-256 digest: ${'1'.repeat(64)}\n`);
+    assert.notEqual(multi.status, 0);
+    assert.match(multi.stderr, /multiple distinct certificate fingerprints|Certificate fingerprint mismatch/);
+    // Malformed digest line (not 64 hex) is rejected, not silently ignored.
+    const malformed = run('V3.0 Signer: certificate SHA-256 digest: deadbeef\n');
+    assert.notEqual(malformed.status, 0);
+    // No certificate line at all is rejected.
+    const absent = run('Verifies\nNumber of signers: 1\n');
+    assert.notEqual(absent.status, 0);
+    assert.match(absent.stderr, /missing/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('public diagnostics precede strict signature and package/version checks', () => {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), 'android-release-test-'));
   try {

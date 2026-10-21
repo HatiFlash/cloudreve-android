@@ -37,10 +37,10 @@ case "${1:-}" in
     "$apksigner" sign --ks "$keyfile" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out Cloudreve.apk "$apk" || fail 'apksigner sign failed'
     printf 'Collecting public certificate diagnostics\n'
     if ! "$apksigner" verify --verbose --print-certs Cloudreve.apk > signer-details.txt; then
-      grep -E '^Signer #1 certificate SHA-256 digest:' signer-details.txt || true
+      grep -E 'certificate SHA-256 digest:' signer-details.txt || true
       fail 'apksigner signature verification failed (see public signer-details.txt artifact)'
     fi
-    grep -E '^Signer #1 certificate SHA-256 digest:' signer-details.txt || true
+    grep -E 'certificate SHA-256 digest:' signer-details.txt || true
     printf 'Collecting public APK metadata\n'
     if ! "$aapt" dump badging Cloudreve.apk > apk-metadata.txt; then
       grep '^package:' apk-metadata.txt || true
@@ -53,10 +53,21 @@ case "${1:-}" in
     [[ -f signer-details.txt ]] || fail 'Public certificate diagnostics are missing'
     [[ -f apk-metadata.txt ]] || fail 'Public APK metadata diagnostics are missing'
     # Print public diagnostics before assertions, including on an identity mismatch.
-    grep -E '^Signer #1 certificate SHA-256 digest:' signer-details.txt || true
+    grep -E 'certificate SHA-256 digest:' signer-details.txt || true
     grep '^package:' apk-metadata.txt || true
     expected_fingerprint=02dec5122a527db623e069c703cf74d558389646f8c58fa685871f54c52b25df
-    actual_fingerprint=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' signer-details.txt | tr '[:upper:]' '[:lower:]')
+    # Accept any apksigner label (legacy "Signer #N" or "V3.0 Signer:") carrying a certificate SHA-256 digest.
+    # Normalize case, CR and surrounding spaces; every such line must be a valid 64-hex digest, and
+    # all of them must agree on a single value.
+    digest_lines=$(grep -E 'certificate SHA-256 digest:' signer-details.txt | tr -d '\r' | sed -E 's/^.*certificate SHA-256 digest:[[:space:]]*//; s/[[:space:]]+$//' | tr '[:upper:]' '[:lower:]' || true)
+    distinct_count=$(printf '%s\n' "$digest_lines" | sed '/^$/d' | sort -u | grep -c . || true)
+    if [[ $distinct_count -gt 1 ]]; then
+      fail "Certificate fingerprint ambiguous: multiple distinct certificate fingerprints present (expected $expected_fingerprint)"
+    fi
+    if [[ -n $digest_lines ]] && ! printf '%s\n' "$digest_lines" | grep -Eq '^[0-9a-f]{64}$'; then
+      fail "Certificate fingerprint malformed (expected $expected_fingerprint)"
+    fi
+    actual_fingerprint=$(printf '%s\n' "$digest_lines" | sed '/^$/d' | head -n 1 || true)
     [[ $actual_fingerprint == "$expected_fingerprint" ]] || fail "Certificate fingerprint mismatch or absent (expected $expected_fingerprint; found ${actual_fingerprint:-missing})"
     package=$(node -p 'require("./app.json").expo.android.package')
     version=$(node -p 'require("./app.json").expo.version')
