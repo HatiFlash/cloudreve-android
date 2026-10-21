@@ -5,35 +5,58 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag (vX.Y.Z); run this workflow from main'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: android-release-${{ github.ref }}
+  group: android-release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   build-and-release:
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
-      - name: Validate release tag
+      - name: Validate release tag before checkout
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+(\.[0-9]+){0,2}([-.][0-9A-Za-z.-]+)?$ ]]; then
-            :
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Release tag must be vX.Y.Z' >&2; exit 1; }
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo 'Push ref does not match release tag' >&2; exit 1; }
           else
-            echo "Release requires a numeric v-prefixed tag (for example v1.2.3)." >&2
-            exit 1
+            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == refs/heads/main ]] || { echo 'Manual release must run from main' >&2; exit 1; }
           fi
+      - name: Checkout workflow helpers from main for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Save workflow helper outside the checkout
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          cp scripts/verify-android-release.sh "$RUNNER_TEMP/verify-android-release.sh"
+          echo "VERIFY_SCRIPT=$RUNNER_TEMP/verify-android-release.sh" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.RELEASE_TAG }}
           persist-credentials: false
+      - name: Validate checked-out source and version
+        shell: bash
+        run: bash "${VERIFY_SCRIPT:-scripts/verify-android-release.sh}" source
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -56,50 +79,39 @@ jobs:
       - name: Build release APK
         working-directory: android
         run: ./gradlew assembleRelease --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
-      - name: Sign APK, verify identity, and prepare checksums
+      - name: Preserve unsigned build APK for diagnostics (not a release)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudreve-unsigned-build-${{ env.RELEASE_TAG }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Sign APK and collect public diagnostics
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         shell: bash
-        run: |
-          set -euo pipefail
-          set +x
-          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
-            if [[ -z "${!name:-}" ]]; then echo "Required signing secret is missing: $name" >&2; exit 1; fi
-          done
-          apk=android/app/build/outputs/apk/release/app-release.apk
-          test -f "$apk"
-          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          [[ -n "$sdk_root" ]] || { echo "Android SDK root is missing" >&2; exit 1; }
-          apksigner=$(find "$sdk_root/build-tools" -mindepth 2 -maxdepth 2 -name apksigner -type f | sort -V | tail -n 1)
-          [[ -x "$apksigner" ]] || { echo "apksigner not found in Android SDK" >&2; exit 1; }
-          keyfile="$RUNNER_TEMP/release-signing.jks"
-          cleanup() { rm -f -- "$keyfile"; }
-          trap cleanup EXIT
-          umask 077
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keyfile"
-          test -s "$keyfile"
-          "$apksigner" sign --ks "$keyfile" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out Cloudreve.apk "$apk"
-          "$apksigner" verify --verbose --print-certs Cloudreve.apk > signer-details.txt
-          grep -q 'Signer #1 certificate SHA-256 digest:' signer-details.txt
-          grep -qi 'Signer #1 certificate SHA-256 digest: 02dec5122a527db623e069c703cf74d558389646f8c58fa685871f54c52b25df' signer-details.txt
-          aapt="$(dirname "$apksigner")/aapt"
-          "$aapt" dump badging Cloudreve.apk > apk-metadata.txt
-          package="$(node -p 'require("./app.json").expo.android.package')"
-          version="$(node -p 'require("./app.json").expo.version')"
-          version_code="$(node -p 'require("./app.json").expo.android.versionCode')"
-          [[ "$GITHUB_REF_NAME" == "v$version" ]]
-          grep -Fq "package: name='$package' versionCode='$version_code' versionName='$version'" apk-metadata.txt
-          grep '^package:' apk-metadata.txt
-          grep -E 'Signer #1 certificate SHA-256 digest:' signer-details.txt
-          sha256sum Cloudreve.apk > SHA256SUMS
-          rm -f signer-details.txt
-      - name: Preserve signed APK
+        run: bash "${VERIFY_SCRIPT:-scripts/verify-android-release.sh}" sign
+      - name: Preserve public certificate and APK metadata diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cloudreve-android-${{ github.ref_name }}
+          name: cloudreve-public-diagnostics-${{ env.RELEASE_TAG }}
+          path: |
+            signer-details.txt
+            apk-metadata.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Verify signing identity and APK version
+        shell: bash
+        run: bash "${VERIFY_SCRIPT:-scripts/verify-android-release.sh}" verify
+      - name: Preserve validated signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudreve-android-${{ env.RELEASE_TAG }}
           path: |
             Cloudreve.apk
             SHA256SUMS
@@ -108,10 +120,8 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_REF" == refs/tags/"$RELEASE_TAG" ]]
           gh release create "$RELEASE_TAG" Cloudreve.apk SHA256SUMS --verify-tag --title "Cloudreve Android $RELEASE_TAG" --notes 'La nouvelle signature impose de désinstaller toute ancienne version avant installation. Cette version corrige la taille réelle des fichiers et les erreurs HTTP 200.'
