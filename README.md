@@ -21,7 +21,7 @@ Made because Cloudreve has no official Android app, and the mobile web UI can't 
 
 Download the latest `Cloudreve.apk` from the [Releases](../../releases) page → open it → allow "install from this source" → install.
 
-Releases from v1.0.2 use a persistent release-signing key kept outside the public repository. **The old debug key was lost:** uninstall v1.0.0 before installing v1.0.2 (local app settings are removed; files on your Cloudreve server are not). Later releases using the new key can update in place.
+Releases from v1.0.3 use a persistent release-signing key kept outside the public repository. **The old debug key was lost:** uninstall v1.0.0 before installing v1.0.3 (local app settings are removed; files on your Cloudreve server are not). Later releases using the new key can update in place.
 
 On first launch, enter your Cloudreve server URL, email and password.
 
@@ -60,7 +60,7 @@ Uploads first copy the picked file (`file://` or Android `content://`) to a temp
 
 ## Signed releases
 
-Push a tag matching `app.json` (for example `v1.0.2`) to run `.github/workflows/android-release.yml`: tests, TypeScript, native Android build, APK re-signing and signature/package/version verification, then publication of `Cloudreve.apk` and `SHA256SUMS`. A manual run must select an existing version tag. Signing material is supplied through the four `ANDROID_KEYSTORE_*` / `ANDROID_KEY_*` GitHub secrets; keep an independent protected copy outside GitHub, never commit it. The release certificate SHA-256 fingerprint is `02:DE:C5:12:2A:52:7D:B6:23:E0:69:C7:03:CF:74:D5:58:38:96:46:F8:C5:8F:A6:85:87:1F:54:C5:2B:25:DF`. This automation does not replace testing the upload on a physical device.
+Push a tag matching `app.json` (for example `v1.0.3`) to run `.github/workflows/android-release.yml`: tests, TypeScript, native Android build, APK re-signing and signature/package/version verification, then publication of `Cloudreve.apk` and `SHA256SUMS`. A manual run must select an existing version tag. Signing material is supplied through the four `ANDROID_KEYSTORE_*` / `ANDROID_KEY_*` GitHub secrets; keep an independent protected copy outside GitHub, never commit it. The release certificate SHA-256 fingerprint is `02:DE:C5:12:2A:52:7D:B6:23:E0:69:C7:03:CF:74:D5:58:38:96:46:F8:C5:8F:A6:85:87:1F:54:C5:2B:25:DF`. This automation does not replace testing the upload on a physical device.
 
 ## 📄 License
 

@@ -84,7 +84,7 @@ jobs:
           "$apksigner" sign --ks "$keyfile" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out Cloudreve.apk "$apk"
           "$apksigner" verify --verbose --print-certs Cloudreve.apk > signer-details.txt
           grep -q 'Signer #1 certificate SHA-256 digest:' signer-details.txt
-          grep -qi 'Signer #1 certificate SHA-256 digest: 02dec5122a527db623e069c703cf74d5583889646f8c58fa685871f54c52b25df' signer-details.txt
+          grep -qi 'Signer #1 certificate SHA-256 digest: 02dec5122a527db623e069c703cf74d558389646f8c58fa685871f54c52b25df' signer-details.txt
           aapt="$(dirname "$apksigner")/aapt"
           "$aapt" dump badging Cloudreve.apk > apk-metadata.txt
           package="$(node -p 'require("./app.json").expo.android.package')"
