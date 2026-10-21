@@ -1,0 +1,114 @@
+name: Android release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" =~ ^refs/tags/v[0-9]+(\.[0-9]+){0,2}([-.][0-9A-Za-z.-]+)?$ ]]; then
+            :
+          else
+            echo "Release requires a numeric v-prefixed tag (for example v1.2.3)." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install dependencies, test, and typecheck
+        run: |
+          npm ci
+          npm test
+          npx tsc --noEmit
+      - name: Generate Android project
+        run: npx expo prebuild --platform android --no-install
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --max-workers=2 -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
+      - name: Sign APK, verify identity, and prepare checksums
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +x
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then echo "Required signing secret is missing: $name" >&2; exit 1; fi
+          done
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          test -f "$apk"
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          [[ -n "$sdk_root" ]] || { echo "Android SDK root is missing" >&2; exit 1; }
+          apksigner=$(find "$sdk_root/build-tools" -mindepth 2 -maxdepth 2 -name apksigner -type f | sort -V | tail -n 1)
+          [[ -x "$apksigner" ]] || { echo "apksigner not found in Android SDK" >&2; exit 1; }
+          keyfile="$RUNNER_TEMP/release-signing.jks"
+          cleanup() { rm -f -- "$keyfile"; }
+          trap cleanup EXIT
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keyfile"
+          test -s "$keyfile"
+          "$apksigner" sign --ks "$keyfile" --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD --out Cloudreve.apk "$apk"
+          "$apksigner" verify --verbose --print-certs Cloudreve.apk > signer-details.txt
+          grep -q 'Signer #1 certificate SHA-256 digest:' signer-details.txt
+          grep -qi 'Signer #1 certificate SHA-256 digest: 02dec5122a527db623e069c703cf74d5583889646f8c58fa685871f54c52b25df' signer-details.txt
+          aapt="$(dirname "$apksigner")/aapt"
+          "$aapt" dump badging Cloudreve.apk > apk-metadata.txt
+          package="$(node -p 'require("./app.json").expo.android.package')"
+          version="$(node -p 'require("./app.json").expo.version')"
+          version_code="$(node -p 'require("./app.json").expo.android.versionCode')"
+          [[ "$GITHUB_REF_NAME" == "v$version" ]]
+          grep -Fq "package: name='$package' versionCode='$version_code' versionName='$version'" apk-metadata.txt
+          grep '^package:' apk-metadata.txt
+          grep -E 'Signer #1 certificate SHA-256 digest:' signer-details.txt
+          sha256sum Cloudreve.apk > SHA256SUMS
+          rm -f signer-details.txt
+      - name: Preserve signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudreve-android-${{ github.ref_name }}
+          path: |
+            Cloudreve.apk
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/tags/"$RELEASE_TAG" ]]
+          gh release create "$RELEASE_TAG" Cloudreve.apk SHA256SUMS --verify-tag --title "Cloudreve Android $RELEASE_TAG" --notes 'La nouvelle signature impose de désinstaller toute ancienne version avant installation. Cette version corrige la taille réelle des fichiers et les erreurs HTTP 200.'
