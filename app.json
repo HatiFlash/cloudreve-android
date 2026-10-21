@@ -3,7 +3,7 @@
     "name": "Cloudreve",
     "slug": "cloudreve-app",
     "scheme": "cloudreveapp",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -13,7 +13,7 @@
     },
     "android": {
       "package": "io.github.hatiflash.cloudreveclient",
-      "versionCode": 2,
+      "versionCode": 3,
       "adaptiveIcon": {
         "backgroundColor": "#ffffff",
         "foregroundImage": "./assets/adaptive-foreground.png"
